@@ -2,6 +2,8 @@ import os
 import json
 import streamlit as st
 from pathlib import Path
+import tkinter as tk
+from tkinter import filedialog
 
 def load_semantic_model(folder_path):
     """Load and validate semantic model folder structure."""
@@ -142,19 +144,38 @@ def save_bpa_rules(tmdl_path, selected_rules):
     except Exception as e:
         return f"Error saving BPA rules: {str(e)}"
 
+def select_folder():
+    """Open a folder selection dialog using tkinter."""
+    root = tk.Tk()
+    root.withdraw()  # Hide the main window
+    folder_selected = filedialog.askdirectory(
+        title="Select Semantic Model Folder"
+    )
+    root.destroy()
+    return folder_selected
+
 def main():
     st.set_page_config(page_title="Power BI BPA Rule Manager", layout="wide")
     st.title("Power BI BPA Rule Manager")
     
     # Step 1: Browse project
     st.subheader("1. Select Semantic Model")
+    
+    # Add folder browse button
+    if st.button("Browse for Semantic Model Folder"):
+        project_folder = select_folder()
+        if project_folder:
+            st.session_state.project_folder = project_folder
+    
+    # Display the selected folder
     project_folder = st.text_input(
-        "Enter the path to your Semantic Model folder:",
-        help="This should be the root folder containing the 'definition' folder with model.tmdl"
+        "Selected Folder Path:",
+        value=st.session_state.get('project_folder', ''),
+        help="Path to the Semantic Model folder containing the 'definition' folder with model.tmdl"
     )
     
     if not project_folder:
-        st.info("Please enter the path to your Semantic Model folder to begin.")
+        st.info("Please select a Semantic Model folder to begin.")
         return
         
     # Load and validate semantic model
