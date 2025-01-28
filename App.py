@@ -2,8 +2,6 @@ import os
 import json
 import streamlit as st
 from pathlib import Path
-import tkinter as tk
-from tkinter import filedialog
 
 def load_semantic_model(folder_path):
     """Load and validate semantic model folder structure."""
@@ -144,57 +142,43 @@ def save_bpa_rules(tmdl_path, selected_rules):
     except Exception as e:
         return f"Error saving BPA rules: {str(e)}"
 
-def select_folder():
-    """Open a folder selection dialog using tkinter."""
-    root = tk.Tk()
-    root.withdraw()  # Hide the main window
-    folder_selected = filedialog.askdirectory(
-        title="Select Semantic Model Folder"
-    )
-    root.destroy()
-    return folder_selected
-
 def main():
     st.set_page_config(page_title="Power BI BPA Rule Manager", layout="wide")
     st.title("Power BI BPA Rule Manager")
-    
+
     # Step 1: Browse project
     st.subheader("1. Select Semantic Model")
     
-    # Add folder browse button
-    if st.button("Browse for Semantic Model Folder"):
-        project_folder = select_folder()
-        if project_folder:
-            st.session_state.project_folder = project_folder
-    
-    # Display the selected folder
+    # Folder path input
     project_folder = st.text_input(
-        "Selected Folder Path:",
-        value=st.session_state.get('project_folder', ''),
+        "Semantic Model Folder Path:",
         help="Path to the Semantic Model folder containing the 'definition' folder with model.tmdl"
     )
     
+    # Add folder browse hint
+    st.info("Enter the full path to your Semantic Model folder. Example: C:/Users/YourName/Documents/SemanticModel")
+    
     if not project_folder:
-        st.info("Please select a Semantic Model folder to begin.")
+        st.warning("Please enter a Semantic Model folder path to begin.")
         return
-        
+    
     # Load and validate semantic model
     model_path, error = load_semantic_model(project_folder)
     if error:
         st.error(error)
         return
-        
+    
     # Step 2: Load and select BPA rules
     st.subheader("2. Select BPA Rules")
     rules, error = load_bpa_rules(model_path)
     if error:
         st.error(error)
         return
-        
+    
     if not rules:
         st.warning("No BPA rules found in the model.")
         return
-        
+    
     # Create two columns for better organization
     col1, col2 = st.columns(2)
     
