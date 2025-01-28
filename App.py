@@ -179,31 +179,69 @@ def main():
         st.warning("No BPA rules found in the model.")
         return
     
+    # Organize rules by category
+    rules_by_category = {}
+    for rule in rules:
+        category = rule.get('Category', 'Uncategorized')
+        if category not in rules_by_category:
+            rules_by_category[category] = []
+        rules_by_category[category].append(rule)
+    
     # Create two columns for better organization
     col1, col2 = st.columns(2)
     
     with col1:
         st.markdown("### Available Rules")
-        # Create checkboxes for each rule with tooltips
+        
+        # Track selected rules
         selected_rules = []
-        for rule in rules:
-            if st.checkbox(
-                f"{rule['Name']}",
-                help=f"""
-                ID: {rule['ID']}
-                Category: {rule['Category']}
-                Severity: {rule['Severity']}
-                Description: {rule['Description']}
-                """,
-                key=rule['ID']
-            ):
-                selected_rules.append(rule)
+        
+        # Create expandable sections for each category
+        for category, category_rules in sorted(rules_by_category.items()):
+            # Expander for each category
+            with st.expander(f" {category} ({len(category_rules)} rules)"):
+                # Category-level select all checkbox
+                category_selected = st.checkbox(
+                    "Select All", 
+                    key=f"category_{category}"
+                )
+                
+                st.markdown("---")  # Separator
+                
+                # Individual rule checkboxes
+                for rule in category_rules:
+                    rule_checkbox = st.checkbox(
+                        f"{rule['Name']}",
+                        value=category_selected,  # Sync with category checkbox
+                        help=f"""
+                        ID: {rule['ID']}
+                        Category: {rule['Category']}
+                        Severity: {rule['Severity']}
+                        Description: {rule['Description']}
+                        """,
+                        key=rule['ID']
+                    )
+                    
+                    # Track selected rules
+                    if rule_checkbox:
+                        selected_rules.append(rule)
     
     with col2:
         st.markdown("### Selected Rules Summary")
         if selected_rules:
+            # Group selected rules by category for summary
+            selected_by_category = {}
             for rule in selected_rules:
-                st.markdown(f"✓ **{rule['Name']}**")
+                category = rule.get('Category', 'Uncategorized')
+                if category not in selected_by_category:
+                    selected_by_category[category] = []
+                selected_by_category[category].append(rule)
+            
+            # Display selected rules grouped by category
+            for category, category_rules in selected_by_category.items():
+                st.markdown(f"**{category}**")
+                for rule in category_rules:
+                    st.markdown(f" {rule['Name']}")
         else:
             st.info("No rules selected")
     
@@ -214,7 +252,7 @@ def main():
         if error:
             st.error(error)
         else:
-            st.success("✅ BPA rules successfully applied and saved!")
+            st.success(" BPA rules successfully applied and saved!")
             st.balloons()
 
 if __name__ == "__main__":
