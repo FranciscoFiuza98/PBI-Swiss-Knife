@@ -67,12 +67,16 @@ class RuleChecker:
                     measure_matches = re.finditer(pattern, content)
                     for match in measure_matches:
                         measure_name = match.group(1)
+                        # Check if the measure name starts with lowercase
                         if measure_name[0].islower():
+                            # Check if it's already quoted
+                            is_quoted = bool(re.search(rf"measure\s+'{re.escape(measure_name)}'", match.group(0)))
                             violations.append({
                                 'type': 'measure',
                                 'name': measure_name,
                                 'line': content.count('\n', 0, match.start()) + 1,
-                                'file': file_path
+                                'file': file_path,
+                                'is_quoted': is_quoted
                             })
                 
                 # Look for table definitions (both quoted and unquoted)
@@ -86,11 +90,14 @@ class RuleChecker:
                     for match in table_matches:
                         table_name = match.group(1)
                         if table_name[0].islower():
+                            # Check if it's already quoted
+                            is_quoted = bool(re.search(rf"table\s+'{re.escape(table_name)}'", match.group(0)))
                             violations.append({
                                 'type': 'table',
                                 'name': table_name,
                                 'line': content.count('\n', 0, match.start()) + 1,
-                                'file': file_path
+                                'file': file_path,
+                                'is_quoted': is_quoted
                             })
                     
             except Exception as e:
@@ -120,14 +127,21 @@ class RuleChecker:
                     old_name = violation['name']
                     new_name = old_name[0].upper() + old_name[1:]
                     
-                    if violation['type'] == 'table' and not old_name.startswith("'"):
-                        # For unquoted table names
-                        pattern = f"table {re.escape(old_name)}\\b"
-                        content = re.sub(pattern, f"table {new_name}", content)
+                    # Handle quoted and unquoted names differently
+                    if violation.get('is_quoted', False):
+                        # For quoted names, include the quotes in the pattern
+                        content = re.sub(
+                            rf"{violation['type']}\s+'{re.escape(old_name)}'",
+                            f"{violation['type']} '{new_name}'",
+                            content
+                        )
                     else:
-                        # For measures and quoted table names
-                        pattern = f"'({re.escape(old_name)})'"
-                        content = re.sub(pattern, lambda m: f"'{new_name}'", content)
+                        # For unquoted names, don't include quotes
+                        content = re.sub(
+                            rf"{violation['type']}\s+{re.escape(old_name)}\b",
+                            f"{violation['type']} {new_name}",
+                            content
+                        )
                 
                 # Write the fixed content back
                 with open(file_path, "w", encoding='utf-8') as f:
@@ -220,10 +234,10 @@ class RuleChecker:
                     # Add spaces before capital letters (except the first one)
                     new_name = re.sub(r'(?<!^)(?<![\W_])([A-Z][a-z])', r' \1', old_name)
                     
-                    # Replace the name in the content
+                    # Replace the name in the content, adding quotes
                     content = re.sub(
                         rf"{violation['type']}\s+{re.escape(old_name)}\b",
-                        f"{violation['type']} {new_name}",
+                        f"{violation['type']} '{new_name}'",
                         content
                     )
                 
