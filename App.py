@@ -1,4 +1,5 @@
 import os
+import re
 import json
 import streamlit as st
 from pathlib import Path
@@ -18,133 +19,149 @@ def load_semantic_model(folder_path):
         
     return model_path, None
 
-def extract_json_array(content, start_marker):
-    """Extract a JSON array from TMDL content starting at a specific marker."""
-    try:
-        # Find the start of the section
-        start_idx = content.find(start_marker)
-        if start_idx == -1:
-            return None, f"Could not find section: {start_marker}"
-            
-        # Move to the start of the array
-        array_start = content.find('[', start_idx)
-        if array_start == -1:
-            return None, "Could not find start of array"
-            
-        # Initialize counters for brackets
-        bracket_count = 1
-        pos = array_start + 1
+class RuleChecker:
+    def __init__(self, model_path):
+        self.model_path = Path(model_path)
+        self.model_dir = self.model_path.parent
+        self.content = None
+        self.table_files = []
+        self.load_content()
         
-        # Track string state
-        in_string = False
-        escape_next = False
-        
-        # Find the matching closing bracket
-        while pos < len(content) and bracket_count > 0:
-            char = content[pos]
+    def load_content(self):
+        """Load the model.tmdl content and find all table files."""
+        try:
+            # Load main model file
+            with open(self.model_path, "r", encoding='utf-8') as f:
+                self.content = f.read()
             
-            if escape_next:
-                escape_next = False
-            elif char == '\\':
-                escape_next = True
-            elif char == '"' and not escape_next:
-                in_string = not in_string
-            elif not in_string:
-                if char == '[':
-                    bracket_count += 1
-                elif char == ']':
-                    bracket_count -= 1
+            # Find all .tmdl files in tables directory
+            tables_dir = self.model_dir / "tables"
+            if tables_dir.exists():
+                self.table_files = list(tables_dir.glob("*.tmdl"))
+                
+        except Exception as e:
+            st.error(f"Error loading model files: {str(e)}")
+            self.content = None
+            
+    def check_uppercase_first_letter_measures_tables(self):
+        """Check for violations of the UPPERCASE_FIRST_LETTER_MEASURES_TABLES rule."""
+        if not self.content:
+            return None
+            
+        violations = []
+        
+        def check_tables_in_content(content, file_path):
+            # Look for unquoted table definitions (table TableName)
+            table_matches = re.finditer(r'(?m)^table\s+([a-zA-Z][a-zA-Z0-9_]*?)(?:\s*$|\s+(?:lineageTag|dataCategory))', content)
+            for match in table_matches:
+                table_name = match.group(1)
+                if table_name[0].islower():
+                    violations.append({
+                        'type': 'table',
+                        'name': table_name,
+                        'line': content.count('\n', 0, match.start()) + 1,
+                        'file': file_path
+                    })
+            
+            # Look for quoted table definitions (table 'TableName')
+            quoted_table_matches = re.finditer(r"(?m)^table\s+'([^']+?)'(?:\s*$|\s*=|\s+(?:lineageTag|dataCategory))", content)
+            for match in quoted_table_matches:
+                table_name = match.group(1)
+                if table_name[0].islower():
+                    violations.append({
+                        'type': 'calculated table',
+                        'name': table_name,
+                        'line': content.count('\n', 0, match.start()) + 1,
+                        'file': file_path
+                    })
+        
+        # Check tables in all files
+        files_to_check = [self.model_path] + self.table_files
+        for file_path in files_to_check:
+            try:
+                with open(file_path, "r", encoding='utf-8') as f:
+                    content = f.read()
+                
+                # Check for table definitions
+                check_tables_in_content(content, file_path)
+                
+                # Look for measure definitions (measure 'MeasureName' = )
+                measure_matches = re.finditer(r"(?m)^\s*measure\s+'([^']+?)'(?:\s*=|$)", content)
+                for match in measure_matches:
+                    measure_name = match.group(1)
+                    # Only add if the first letter is lowercase
+                    if measure_name[0].islower():
+                        violations.append({
+                            'type': 'measure',
+                            'name': measure_name,
+                            'line': content.count('\n', 0, match.start()) + 1,
+                            'file': file_path
+                        })
                     
-            pos += 1
+            except Exception as e:
+                st.warning(f"Error checking file {file_path}: {str(e)}")
+                continue
             
-        if bracket_count != 0:
-            return None, "Malformed JSON array: unmatched brackets"
-            
-        # Extract and parse the JSON array
-        json_str = content[array_start:pos]
-        return json.loads(json_str), None
+        return violations if violations else None
         
-    except json.JSONDecodeError as e:
-        return None, f"JSON parsing error: {str(e)}"
-    except Exception as e:
-        return None, f"Error extracting JSON array: {str(e)}"
-
-def load_bpa_rules(tmdl_path):
-    """Load BPA rules from the model.tmdl file."""
-    try:
-        with open(tmdl_path, "r", encoding='utf-8') as f:
-            content = f.read()
+    def fix_uppercase_first_letter(self, violations):
+        """Fix violations of the UPPERCASE_FIRST_LETTER_MEASURES_TABLES rule."""
+        try:
+            # Group violations by file
+            violations_by_file = {}
+            for violation in violations:
+                file_path = Path(violation['file'])
+                if file_path not in violations_by_file:
+                    violations_by_file[file_path] = []
+                violations_by_file[file_path].append(violation)
             
-        # Extract the BPA rules array
-        rules, error = extract_json_array(content, 'annotation BestPracticeAnalyzer =')
-        if error:
-            return [], error
-            
-        return rules, None
-            
-    except Exception as e:
-        return [], f"Error loading BPA rules: {str(e)}"
-
-def save_bpa_rules(tmdl_path, selected_rules):
-    """Save selected BPA rules back to the model.tmdl file."""
-    try:
-        with open(tmdl_path, "r", encoding='utf-8') as f:
-            content = f.read()
-            
-        # Find the BestPracticeAnalyzer annotation section
-        start = content.find('annotation BestPracticeAnalyzer =')
-        if start == -1:
-            return "Could not find BestPracticeAnalyzer annotation in model.tmdl"
-            
-        # Find the array boundaries
-        rules_start = content.find('[', start)
-        if rules_start == -1:
-            return "Could not find start of BPA rules array"
-            
-        # Initialize counters for brackets
-        bracket_count = 1
-        pos = rules_start + 1
-        
-        # Track string state
-        in_string = False
-        escape_next = False
-        
-        # Find the matching closing bracket
-        while pos < len(content) and bracket_count > 0:
-            char = content[pos]
-            
-            if escape_next:
-                escape_next = False
-            elif char == '\\':
-                escape_next = True
-            elif char == '"' and not escape_next:
-                in_string = not in_string
-            elif not in_string:
-                if char == '[':
-                    bracket_count += 1
-                elif char == ']':
-                    bracket_count -= 1
+            # Fix violations in each file
+            for file_path, file_violations in violations_by_file.items():
+                with open(file_path, "r", encoding='utf-8') as f:
+                    content = f.read()
+                
+                # Fix each violation
+                for violation in file_violations:
+                    old_name = violation['name']
+                    new_name = old_name[0].upper() + old_name[1:]
                     
-            pos += 1
+                    if violation['type'] == 'table' and not old_name.startswith("'"):
+                        # For unquoted table names
+                        pattern = f"table {re.escape(old_name)}\\b"
+                        content = re.sub(pattern, f"table {new_name}", content)
+                    else:
+                        # For measures and quoted table names
+                        pattern = f"'({re.escape(old_name)})'"
+                        content = re.sub(pattern, lambda m: f"'{new_name}'", content)
+                
+                # Write the fixed content back
+                with open(file_path, "w", encoding='utf-8') as f:
+                    f.write(content)
             
-        if bracket_count != 0:
-            return "Malformed BPA rules array in model.tmdl"
+            # Reload content after all fixes
+            self.load_content()
+            return None
             
-        # Replace the rules array
-        new_rules = json.dumps(selected_rules, indent=2)
-        new_content = content[:rules_start] + new_rules + content[pos:]
-        
-        with open(tmdl_path, "w", encoding='utf-8') as f:
-            f.write(new_content)
-            
-        return None
-        
-    except Exception as e:
-        return f"Error saving BPA rules: {str(e)}"
+        except Exception as e:
+            st.error(f"Error fixing uppercase first letter rule: {str(e)}")
+            return str(e)
+
+def get_available_rules():
+    """Get list of available rules that can be checked."""
+    return [
+        {
+            "ID": "UPPERCASE_FIRST_LETTER_MEASURES_TABLES",
+            "Name": "Measure and table names must start with uppercase letter",
+            "Category": "Naming Conventions",
+            "Description": "Avoid using prefixes and camelCasing. Use \"Sales\" instead of \"dimSales\" or \"mSales\".",
+            "Severity": 2,
+            "checker_method": "check_uppercase_first_letter_measures_tables"
+        }
+    ]
 
 def main():
-    st.set_page_config(page_title="Power BI BPA Rule Manager", layout="wide")
-    st.title("Power BI BPA Rule Manager")
+    st.set_page_config(page_title="Power BI BPA Rule Checker", layout="wide")
+    st.title("Power BI BPA Rule Checker")
 
     # Step 1: Browse project
     st.subheader("1. Select Semantic Model")
@@ -167,93 +184,47 @@ def main():
     if error:
         st.error(error)
         return
+        
+    # Initialize rule checker
+    checker = RuleChecker(model_path)
     
-    # Step 2: Load and select BPA rules
-    st.subheader("2. Select BPA Rules")
-    rules, error = load_bpa_rules(model_path)
-    if error:
-        st.error(error)
-        return
+    # Step 2: Check for rule violations
+    st.subheader("2. Rule Violations")
     
-    if not rules:
-        st.warning("No BPA rules found in the model.")
-        return
+    # Get available rules
+    rules = get_available_rules()
     
-    # Organize rules by category
-    rules_by_category = {}
+    # Check each rule for violations
+    violations_found = False
     for rule in rules:
-        category = rule.get('Category', 'Uncategorized')
-        if category not in rules_by_category:
-            rules_by_category[category] = []
-        rules_by_category[category].append(rule)
-    
-    # Create two columns for better organization
-    col1, col2 = st.columns(2)
-    
-    with col1:
-        st.markdown("### Available Rules")
+        checker_method = getattr(checker, rule['checker_method'])
+        violations = checker_method()
         
-        # Track selected rules
-        selected_rules = []
-        
-        # Create expandable sections for each category
-        for category, category_rules in sorted(rules_by_category.items()):
-            # Expander for each category
-            with st.expander(f" {category} ({len(category_rules)} rules)"):
-                # Category-level select all checkbox
-                category_selected = st.checkbox(
-                    "Select All", 
-                    key=f"category_{category}"
-                )
+        if violations:
+            violations_found = True
+            with st.expander(f"🔴 {rule['Name']} ({len(violations)} violations)"):
+                st.markdown(f"""
+                **Rule ID:** {rule['ID']}  
+                **Category:** {rule['Category']}  
+                **Severity:** {rule['Severity']}  
+                **Description:** {rule['Description']}
+                """)
                 
-                st.markdown("---")  # Separator
-                
-                # Individual rule checkboxes
-                for rule in category_rules:
-                    rule_checkbox = st.checkbox(
-                        f"{rule['Name']}",
-                        value=category_selected,  # Sync with category checkbox
-                        help=f"""
-                        ID: {rule['ID']}
-                        Category: {rule['Category']}
-                        Severity: {rule['Severity']}
-                        Description: {rule['Description']}
-                        """,
-                        key=rule['ID']
-                    )
+                st.markdown("### Violations:")
+                for v in violations:
+                    file_name = Path(v['file']).name
+                    st.markdown(f"- {v['type'].title()}: `{v['name']}` (in `{file_name}` line {v['line']})")
                     
-                    # Track selected rules
-                    if rule_checkbox:
-                        selected_rules.append(rule)
+                if st.button(f"Fix {rule['Name']}", key=f"fix_{rule['ID']}"):
+                    error = checker.fix_uppercase_first_letter(violations)
+                    if error:
+                        st.error(error)
+                    else:
+                        st.success(f"Successfully fixed {rule['Name']} violations!")
+                        st.rerun()
     
-    with col2:
-        st.markdown("### Selected Rules Summary")
-        if selected_rules:
-            # Group selected rules by category for summary
-            selected_by_category = {}
-            for rule in selected_rules:
-                category = rule.get('Category', 'Uncategorized')
-                if category not in selected_by_category:
-                    selected_by_category[category] = []
-                selected_by_category[category].append(rule)
-            
-            # Display selected rules grouped by category
-            for category, category_rules in selected_by_category.items():
-                st.markdown(f"**{category}**")
-                for rule in category_rules:
-                    st.markdown(f" {rule['Name']}")
-        else:
-            st.info("No rules selected")
-    
-    # Step 3: Apply and save
-    st.subheader("3. Apply Rules")
-    if st.button("Apply Selected Rules", disabled=not selected_rules):
-        error = save_bpa_rules(model_path, selected_rules)
-        if error:
-            st.error(error)
-        else:
-            st.success(" BPA rules successfully applied and saved!")
-            st.balloons()
+    if not violations_found:
+        st.success("🟢 No rule violations found in the semantic model!")
 
 if __name__ == "__main__":
     main()
