@@ -1,10 +1,10 @@
-# Power BI Report and Model files
+#Power BI Report and Model files
 Playground.Report/
 Playground.SemanticModel/
 Report/Playground.Report/
 Report/Playground.SemanticModel/
 
-# Power BI project files
+#Power BI project files
 *.pbip
 *.pbix
 Playground.pbip

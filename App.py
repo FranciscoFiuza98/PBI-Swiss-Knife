@@ -50,60 +50,55 @@ class RuleChecker:
             
         violations = []
         
-        def check_tables_in_content(content, file_path):
-            # Look for unquoted table definitions (table TableName)
-            table_matches = re.finditer(r'(?m)^table\s+([a-zA-Z][a-zA-Z0-9_]*?)(?:\s*$|\s+(?:lineageTag|dataCategory))', content)
-            for match in table_matches:
-                table_name = match.group(1)
-                if table_name[0].islower():
-                    violations.append({
-                        'type': 'table',
-                        'name': table_name,
-                        'line': content.count('\n', 0, match.start()) + 1,
-                        'file': file_path
-                    })
-            
-            # Look for quoted table definitions (table 'TableName')
-            quoted_table_matches = re.finditer(r"(?m)^table\s+'([^']+?)'(?:\s*$|\s*=|\s+(?:lineageTag|dataCategory))", content)
-            for match in quoted_table_matches:
-                table_name = match.group(1)
-                if table_name[0].islower():
-                    violations.append({
-                        'type': 'calculated table',
-                        'name': table_name,
-                        'line': content.count('\n', 0, match.start()) + 1,
-                        'file': file_path
-                    })
-        
-        # Check tables in all files
+        # Check all files for measures and tables
         files_to_check = [self.model_path] + self.table_files
         for file_path in files_to_check:
             try:
                 with open(file_path, "r", encoding='utf-8') as f:
                     content = f.read()
                 
-                # Check for table definitions
-                check_tables_in_content(content, file_path)
+                # Look for measure definitions (both quoted and unquoted)
+                measure_patterns = [
+                    r"(?m)^\s*measure\s+'([^']+?)'(?:\s*=|$)",  # Quoted measures
+                    r"(?m)^\s*measure\s+([a-zA-Z][a-zA-Z0-9_]*)\b(?:\s*=|$)"  # Unquoted measures
+                ]
                 
-                # Look for measure definitions (measure 'MeasureName' = )
-                measure_matches = re.finditer(r"(?m)^\s*measure\s+'([^']+?)'(?:\s*=|$)", content)
-                for match in measure_matches:
-                    measure_name = match.group(1)
-                    # Only add if the first letter is lowercase
-                    if measure_name[0].islower():
-                        violations.append({
-                            'type': 'measure',
-                            'name': measure_name,
-                            'line': content.count('\n', 0, match.start()) + 1,
-                            'file': file_path
-                        })
+                for pattern in measure_patterns:
+                    measure_matches = re.finditer(pattern, content)
+                    for match in measure_matches:
+                        measure_name = match.group(1)
+                        if measure_name[0].islower():
+                            violations.append({
+                                'type': 'measure',
+                                'name': measure_name,
+                                'line': content.count('\n', 0, match.start()) + 1,
+                                'file': file_path
+                            })
+                
+                # Look for table definitions (both quoted and unquoted)
+                table_patterns = [
+                    r"(?m)^table\s+'([^']+?)'(?:\s*=|$)",  # Quoted tables
+                    r"(?m)^table\s+([a-zA-Z][a-zA-Z0-9_]*)\b"  # Unquoted tables
+                ]
+                
+                for pattern in table_patterns:
+                    table_matches = re.finditer(pattern, content)
+                    for match in table_matches:
+                        table_name = match.group(1)
+                        if table_name[0].islower():
+                            violations.append({
+                                'type': 'table',
+                                'name': table_name,
+                                'line': content.count('\n', 0, match.start()) + 1,
+                                'file': file_path
+                            })
                     
             except Exception as e:
                 st.warning(f"Error checking file {file_path}: {str(e)}")
                 continue
             
         return violations if violations else None
-        
+
     def fix_uppercase_first_letter(self, violations):
         """Fix violations of the UPPERCASE_FIRST_LETTER_MEASURES_TABLES rule."""
         try:
@@ -166,43 +161,36 @@ class RuleChecker:
             try:
                 with open(file_path, "r", encoding='utf-8') as f:
                     content = f.read()
+                    lines = content.split('\n')
                 
-                # Look for column definitions
-                column_types = ['column', 'calculatedColumn', 'dataColumn', 'calculatedTableColumn']
-                for col_type in column_types:
-                    # Match column definitions that don't have isHidden = true
-                    column_matches = re.finditer(
-                        rf"(?m)^\s*{col_type}\s+([A-Za-z][A-Za-z0-9_]*)\b(?:(?!isHidden\s*=\s*true).)*$",
-                        content,
-                        re.DOTALL
-                    )
-                    
-                    for match in column_matches:
-                        col_name = match.group(1)
-                        if is_pascalcase_without_spaces(col_name):
+                # Split content into blocks to properly check isHidden property
+                blocks = re.split(r'\n(?=\t*(?:column|calculatedColumn|dataColumn|calculatedTableColumn|hierarchy)\s+)', content)
+                
+                current_line = 1
+                for block in blocks:
+                    # Check if this block defines a column or hierarchy
+                    match = re.match(r'\t*(column|calculatedColumn|dataColumn|calculatedTableColumn|hierarchy)\s+([A-Za-z][A-Za-z0-9_]*)', block)
+                    if match:
+                        item_type = match.group(1)
+                        item_name = match.group(2)
+                        
+                        # Skip if isHidden is present
+                        if 'isHidden' in block:
+                            current_line += block.count('\n')
+                            continue
+                            
+                        if is_pascalcase_without_spaces(item_name):
                             violations.append({
-                                'type': col_type,
-                                'name': col_name,
-                                'line': content.count('\n', 0, match.start()) + 1,
+                                'type': item_type,
+                                'name': item_name,
+                                'line': current_line,
                                 'file': file_path
                             })
-                
-                # Look for hierarchy definitions
-                hierarchy_matches = re.finditer(
-                    r"(?m)^\s*hierarchy\s+([A-Za-z][A-Za-z0-9_]*)\b(?:(?!isHidden\s*=\s*true).)*$",
-                    content,
-                    re.DOTALL
-                )
-                
-                for match in hierarchy_matches:
-                    hierarchy_name = match.group(1)
-                    if is_pascalcase_without_spaces(hierarchy_name):
-                        violations.append({
-                            'type': 'hierarchy',
-                            'name': hierarchy_name,
-                            'line': content.count('\n', 0, match.start()) + 1,
-                            'file': file_path
-                        })
+                        
+                        current_line += block.count('\n')
+                    else:
+                        # If not a column/hierarchy block, just count the lines
+                        current_line += block.count('\n')
                     
             except Exception as e:
                 st.warning(f"Error checking file {file_path}: {str(e)}")
