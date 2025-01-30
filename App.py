@@ -146,6 +146,111 @@ class RuleChecker:
             st.error(f"Error fixing uppercase first letter rule: {str(e)}")
             return str(e)
 
+    def check_no_pascalcase_columns_hierarchies(self):
+        """Check for PascalCase usage in visible columns and hierarchies."""
+        if not self.content:
+            return None
+            
+        violations = []
+        
+        # Pattern to match PascalCase (at least two capital letters with lowercase in between)
+        pascal_pattern = r"[A-Z]([A-Z0-9]*[a-z][a-z0-9]*[A-Z]|[a-z0-9]*[A-Z][A-Z0-9]*[a-z])[A-Za-z0-9]*"
+        
+        def is_pascalcase_without_spaces(name):
+            """Check if a name is in PascalCase and doesn't contain spaces."""
+            return bool(re.match(pascal_pattern, name)) and ' ' not in name
+        
+        # Check all files for columns and hierarchies
+        files_to_check = [self.model_path] + self.table_files
+        for file_path in files_to_check:
+            try:
+                with open(file_path, "r", encoding='utf-8') as f:
+                    content = f.read()
+                
+                # Look for column definitions
+                column_types = ['column', 'calculatedColumn', 'dataColumn', 'calculatedTableColumn']
+                for col_type in column_types:
+                    # Match column definitions that don't have isHidden = true
+                    column_matches = re.finditer(
+                        rf"(?m)^\s*{col_type}\s+([A-Za-z][A-Za-z0-9_]*)\b(?:(?!isHidden\s*=\s*true).)*$",
+                        content,
+                        re.DOTALL
+                    )
+                    
+                    for match in column_matches:
+                        col_name = match.group(1)
+                        if is_pascalcase_without_spaces(col_name):
+                            violations.append({
+                                'type': col_type,
+                                'name': col_name,
+                                'line': content.count('\n', 0, match.start()) + 1,
+                                'file': file_path
+                            })
+                
+                # Look for hierarchy definitions
+                hierarchy_matches = re.finditer(
+                    r"(?m)^\s*hierarchy\s+([A-Za-z][A-Za-z0-9_]*)\b(?:(?!isHidden\s*=\s*true).)*$",
+                    content,
+                    re.DOTALL
+                )
+                
+                for match in hierarchy_matches:
+                    hierarchy_name = match.group(1)
+                    if is_pascalcase_without_spaces(hierarchy_name):
+                        violations.append({
+                            'type': 'hierarchy',
+                            'name': hierarchy_name,
+                            'line': content.count('\n', 0, match.start()) + 1,
+                            'file': file_path
+                        })
+                    
+            except Exception as e:
+                st.warning(f"Error checking file {file_path}: {str(e)}")
+                continue
+            
+        return violations if violations else None
+
+    def fix_pascalcase_columns_hierarchies(self, violations):
+        """Fix PascalCase violations in columns and hierarchies by adding spaces."""
+        try:
+            # Group violations by file
+            violations_by_file = {}
+            for violation in violations:
+                file_path = Path(violation['file'])
+                if file_path not in violations_by_file:
+                    violations_by_file[file_path] = []
+                violations_by_file[file_path].append(violation)
+            
+            # Fix violations in each file
+            for file_path, file_violations in violations_by_file.items():
+                with open(file_path, "r", encoding='utf-8') as f:
+                    content = f.read()
+                
+                # Fix each violation
+                for violation in file_violations:
+                    old_name = violation['name']
+                    # Add spaces before capital letters (except the first one)
+                    new_name = re.sub(r'(?<!^)(?<![\W_])([A-Z][a-z])', r' \1', old_name)
+                    
+                    # Replace the name in the content
+                    content = re.sub(
+                        rf"{violation['type']}\s+{re.escape(old_name)}\b",
+                        f"{violation['type']} {new_name}",
+                        content
+                    )
+                
+                # Write the fixed content back
+                with open(file_path, "w", encoding='utf-8') as f:
+                    f.write(content)
+            
+            # Reload content after all fixes
+            self.load_content()
+            return None
+            
+        except Exception as e:
+            st.error(f"Error fixing PascalCase violations: {str(e)}")
+            return str(e)
+
 def get_available_rules():
     """Get list of available rules that can be checked."""
     return [
@@ -155,7 +260,17 @@ def get_available_rules():
             "Category": "Naming Conventions",
             "Description": "Avoid using prefixes and camelCasing. Use \"Sales\" instead of \"dimSales\" or \"mSales\".",
             "Severity": 2,
-            "checker_method": "check_uppercase_first_letter_measures_tables"
+            "checker_method": "check_uppercase_first_letter_measures_tables",
+            "fixer_method": "fix_uppercase_first_letter"
+        },
+        {
+            "ID": "NO_PASCALCASE_COLUMNS_HIERARCHIES",
+            "Name": "[Naming Conventions] Avoid PascalCase (without whitespaces) on visible columns and hierarchies",
+            "Category": "Naming Conventions",
+            "Description": "Visible columns and hierarchies should not use PascalCase in their names",
+            "Severity": 2,
+            "checker_method": "check_no_pascalcase_columns_hierarchies",
+            "fixer_method": "fix_pascalcase_columns_hierarchies"
         }
     ]
 
@@ -216,7 +331,7 @@ def main():
                     st.markdown(f"- {v['type'].title()}: `{v['name']}` (in `{file_name}` line {v['line']})")
                     
                 if st.button(f"Fix {rule['Name']}", key=f"fix_{rule['ID']}"):
-                    error = checker.fix_uppercase_first_letter(violations)
+                    error = getattr(checker, rule['fixer_method'])(violations)
                     if error:
                         st.error(error)
                     else:
